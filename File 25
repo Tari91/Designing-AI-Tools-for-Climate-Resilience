@@ -1,275 +1,121 @@
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-from sklearn.preprocessing import MinMaxScaler
+import seaborn as sns
+
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import classification_report, confusion_matrix
 from sklearn.model_selection import train_test_split
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Dense, LSTM
-from tensorflow.keras.optimizers import Adam
-from datetime import timedelta
 
-# --- 1. Synthetic Climate Data Generation ---
+import torch
+import torch.nn as nn
+import torch.optim as optim
 
-def generate_synthetic_climate_data(
-    num_years: int = 10,
-    start_date: str = '2000-01-01',
-    temp_base: float = 20.0,
-    temp_amplitude: float = 10.0,
-    temp_trend_per_year: float = 0.1,
-    precip_base: float = 5.0,
-    precip_amplitude: float = 4.0,
-    precip_trend_per_year: float = -0.05,
-    noise_std_dev: float = 0.5,
-    extreme_event_prob: float = 0.02, # Probability of an extreme event on any given day
-    extreme_temp_increase: float = 5.0,
-    extreme_precip_increase: float = 15.0
-) -> pd.DataFrame:
-    """
-    Generates synthetic daily climate data (temperature and precipitation).
+def generate_synthetic_climate_data(num_samples=10000):
+    np.random.seed(42)
 
-    Args:
-        num_years (int): Number of years for which to generate data.
-        start_date (str): Start date for the data in 'YYYY-MM-DD' format.
-        temp_base (float): Base temperature in degrees Celsius.
-        temp_amplitude (float): Amplitude of seasonal temperature variation.
-        temp_trend_per_year (float): Annual temperature increase/decrease.
-        precip_base (float): Base precipitation in mm.
-        precip_amplitude (float): Amplitude of seasonal precipitation variation.
-        precip_trend_per_year (float): Annual precipitation increase/decrease.
-        noise_std_dev (float): Standard deviation of random noise.
-        extreme_event_prob (float): Probability of an extreme event occurring on a given day.
-        extreme_temp_increase (float): Temperature increase during an extreme heat event.
-        extreme_precip_increase (float): Precipitation increase during an extreme rainfall event.
+    # Simulate features
+    temperature = np.random.normal(loc=30, scale=5, size=num_samples)
+    precipitation = np.random.exponential(scale=50, size=num_samples)
+    humidity = np.random.uniform(20, 90, num_samples)
+    wind_speed = np.random.normal(loc=10, scale=3, size=num_samples)
+    vegetation_index = np.random.uniform(0.2, 0.9, num_samples)
 
-    Returns:
-        pd.DataFrame: DataFrame with 'Date', 'Temperature', and 'Precipitation' columns.
-    """
-    dates = pd.date_range(start=start_date, periods=num_years * 365, freq='D')
-    num_days = len(dates)
-
-    # Initialize arrays for temperature and precipitation
-    temperature = np.zeros(num_days)
-    precipitation = np.zeros(num_days)
-
-    for i, date in enumerate(dates):
-        day_of_year = date.dayofyear
-        year_fraction = date.year + day_of_year / 365.25 - dates[0].year
-
-        # Seasonal component (sine wave) - Temperature peaks in summer (around day 170)
-        temp_seasonal = temp_amplitude * np.sin(2 * np.pi * (day_of_year - 80) / 365.25)
-        # Seasonal component (sine wave) - Precipitation peaks in rainy season (adjust phase)
-        precip_seasonal = precip_amplitude * (np.sin(2 * np.pi * (day_of_year - 150) / 365.25) + 1) / 2 # Ensure non-negative
-
-        # Long-term trend
-        temp_trend = temp_trend_per_year * year_fraction
-        precip_trend = precip_trend_per_year * year_fraction
-
-        # Random noise
-        temp_noise = np.random.normal(0, noise_std_dev)
-        precip_noise = np.random.normal(0, noise_std_dev)
-
-        # Calculate daily values
-        current_temp = temp_base + temp_seasonal + temp_trend + temp_noise
-        current_precip = precip_base + precip_seasonal + precip_trend + precip_noise
-        current_precip = max(0, current_precip) # Precipitation cannot be negative
-
-        # Simulate extreme events
-        if np.random.rand() < extreme_event_prob:
-            event_type = np.random.choice(['heatwave', 'heavy_rain'])
-            if event_type == 'heatwave':
-                current_temp += extreme_temp_increase
-            elif event_type == 'heavy_rain':
-                current_precip += extreme_precip_increase
-
-        temperature[i] = current_temp
-        precipitation[i] = current_precip
-
-    df = pd.DataFrame({
-        'Date': dates,
-        'Temperature': temperature,
-        'Precipitation': precipitation
-    })
-    df.set_index('Date', inplace=True)
-    return df
-
-# --- 2. Data Preprocessing for AI Model ---
-
-def create_sequences(data: np.ndarray, look_back: int, predict_ahead: int) -> tuple[np.ndarray, np.ndarray]:
-    """
-    Creates sequences of data for time series prediction.
-
-    Args:
-        data (np.ndarray): The input time series data (e.g., scaled temperature/precipitation).
-        look_back (int): Number of past time steps to use as input features.
-        predict_ahead (int): Number of future time steps to predict.
-
-    Returns:
-        tuple[np.ndarray, np.ndarray]: X (features) and y (labels) arrays.
-    """
-    X, y = [], []
-    for i in range(len(data) - look_back - predict_ahead + 1):
-        # Features: look_back past values
-        X.append(data[i:(i + look_back), :])
-        # Labels: predict_ahead future values
-        y.append(data[(i + look_back):(i + look_back + predict_ahead), :])
-    return np.array(X), np.array(y)
-
-# --- Main Execution ---
-
-if __name__ == "__main__":
-    print("Generating synthetic climate data...")
-    climate_data = generate_synthetic_climate_data(num_years=15)
-    print("Synthetic data generated. Head of data:")
-    print(climate_data.head())
-    print("\nData description:")
-    print(climate_data.describe())
-
-    # Plot the synthetic data
-    plt.figure(figsize=(14, 7))
-    plt.subplot(2, 1, 1)
-    plt.plot(climate_data.index, climate_data['Temperature'], label='Temperature (°C)')
-    plt.title('Synthetic Daily Temperature Data')
-    plt.ylabel('Temperature (°C)')
-    plt.legend()
-    plt.grid(True)
-
-    plt.subplot(2, 1, 2)
-    plt.plot(climate_data.index, climate_data['Precipitation'], label='Precipitation (mm)', color='orange')
-    plt.title('Synthetic Daily Precipitation Data')
-    plt.xlabel('Date')
-    plt.ylabel('Precipitation (mm)')
-    plt.legend()
-    plt.grid(True)
-    plt.tight_layout()
-    plt.show()
-
-    print("\nPreprocessing data for AI model...")
-
-    # Normalize the data
-    scaler = MinMaxScaler(feature_range=(0, 1))
-    scaled_data = scaler.fit_transform(climate_data[['Temperature', 'Precipitation']])
-
-    # Define sequence parameters
-    LOOK_BACK = 30  # Use past 30 days of data as input
-    PREDICT_AHEAD = 7 # Predict next 7 days of data
-
-    X, y = create_sequences(scaled_data, LOOK_BACK, PREDICT_AHEAD)
-
-    # Reshape y to be 2D for easier inverse scaling later, if needed for plotting.
-    # For training, Keras expects y to match the output shape of the model.
-    # If the model outputs a flattened sequence, y should be flattened too.
-    # Here, we'll predict the 7 days of both temp and precip, so output shape will be 7 * 2 = 14.
-    y = y.reshape(y.shape[0], y.shape[1] * y.shape[2])
-
-    print(f"Shape of X (features): {X.shape}") # (samples, look_back, features)
-    print(f"Shape of y (labels): {y.shape}")   # (samples, predict_ahead * features)
-
-    # Split data into training and testing sets
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, shuffle=False)
-
-    print(f"Shape of X_train: {X_train.shape}")
-    print(f"Shape of y_train: {y_train.shape}")
-    print(f"Shape of X_test: {X_test.shape}")
-    print(f"Shape of y_test: {y_test.shape}")
-
-    # --- 3. Building and Training the AI Model (LSTM) ---
-
-    print("\nBuilding the AI model...")
-    model = Sequential([
-        LSTM(50, activation='relu', input_shape=(LOOK_BACK, scaled_data.shape[1])),
-        Dense(PREDICT_AHEAD * scaled_data.shape[1]) # Output layer for PREDICT_AHEAD days * 2 features
-    ])
-
-    model.compile(optimizer=Adam(learning_rate=0.001), loss='mse')
-    model.summary()
-
-    print("\nTraining the AI model...")
-    history = model.fit(
-        X_train, y_train,
-        epochs=50, # Number of training iterations
-        batch_size=32,
-        validation_split=0.1, # Use a portion of training data for validation
-        verbose=1
+    # Target label: 1 = high climate risk, 0 = low risk
+    risk_score = (
+        (temperature > 35).astype(int) +
+        (precipitation < 20).astype(int) +
+        (humidity < 30).astype(int) +
+        (wind_speed > 15).astype(int) +
+        (vegetation_index < 0.4).astype(int)
     )
 
-    print("\nTraining complete. Evaluating the model...")
+    # Define risk threshold
+    climate_risk = (risk_score >= 3).astype(int)
 
-    # Plot training history
-    plt.figure(figsize=(10, 6))
-    plt.plot(history.history['loss'], label='Train Loss')
-    plt.plot(history.history['val_loss'], label='Validation Loss')
-    plt.title('Model Loss During Training')
-    plt.xlabel('Epoch')
-    plt.ylabel('Loss (Mean Squared Error)')
-    plt.legend()
-    plt.grid(True)
+    # Combine into DataFrame
+    df = pd.DataFrame({
+        'temperature': temperature,
+        'precipitation': precipitation,
+        'humidity': humidity,
+        'wind_speed': wind_speed,
+        'vegetation_index': vegetation_index,
+        'climate_risk': climate_risk
+    })
+
+    return df
+def train_random_forest(df):
+    X = df.drop(columns=['climate_risk'])
+    y = df['climate_risk']
+
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+    model = RandomForestClassifier(n_estimators=100, random_state=42)
+    model.fit(X_train, y_train)
+
+    y_pred = model.predict(X_test)
+
+    print("Classification Report:\n", classification_report(y_test, y_pred))
+    sns.heatmap(confusion_matrix(y_test, y_pred), annot=True, fmt="d", cmap="YlGnBu")
+    plt.title("Confusion Matrix")
+    plt.xlabel("Predicted")
+    plt.ylabel("Actual")
     plt.show()
 
-    # Evaluate on test data
-    test_loss = model.evaluate(X_test, y_test, verbose=0)
-    print(f"Test Loss (Mean Squared Error): {test_loss:.4f}")
+    return model
+class ClimateRiskNN(nn.Module):
+    def __init__(self):
+        super(ClimateRiskNN, self).__init__()
+        self.net = nn.Sequential(
+            nn.Linear(5, 16),
+            nn.ReLU(),
+            nn.Linear(16, 8),
+            nn.ReLU(),
+            nn.Linear(8, 2)
+        )
 
-    # --- Demonstrate Prediction ---
-    print("\nDemonstrating prediction on a sample from the test set...")
+    def forward(self, x):
+        return self.net(x)
 
-    # Take a sample from the test set for prediction
-    sample_index = 0 # You can change this index to view different predictions
-    sample_input = X_test[sample_index:sample_index+1]
-    actual_output_scaled = y_test[sample_index]
+def train_nn(df):
+    X = df.drop(columns=['climate_risk']).values.astype(np.float32)
+    y = df['climate_risk'].values.astype(np.int64)
 
-    predicted_output_scaled = model.predict(sample_input)[0]
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
-    # Inverse transform the scaled predictions and actual values
-    # Reshape actual_output_scaled and predicted_output_scaled back to (predict_ahead, num_features)
-    actual_output_reshaped = actual_output_scaled.reshape(PREDICT_AHEAD, scaled_data.shape[1])
-    predicted_output_reshaped = predicted_output_scaled.reshape(PREDICT_AHEAD, scaled_data.shape[1])
+    model = ClimateRiskNN()
+    criterion = nn.CrossEntropyLoss()
+    optimizer = optim.Adam(model.parameters(), lr=0.001)
 
-    actual_output = scaler.inverse_transform(actual_output_reshaped)
-    predicted_output = scaler.inverse_transform(predicted_output_reshaped)
+    X_train_tensor = torch.tensor(X_train)
+    y_train_tensor = torch.tensor(y_train)
+    X_test_tensor = torch.tensor(X_test)
+    y_test_tensor = torch.tensor(y_test)
 
-    # Get the dates for the prediction period
-    # Find the date corresponding to the start of the prediction for the sample_index
-    # The 'y' data starts 'LOOK_BACK' days after the start of the 'X' data
-    # And 'X_test' starts at 'len(X_train)' index in the original X array
-    original_start_index_for_sample = len(X_train) + sample_index + LOOK_BACK
-    prediction_start_date = climate_data.index[original_start_index_for_sample]
-    prediction_dates = [prediction_start_date + timedelta(days=i) for i in range(PREDICT_AHEAD)]
+    for epoch in range(50):
+        model.train()
+        optimizer.zero_grad()
+        output = model(X_train_tensor)
+        loss = criterion(output, y_train_tensor)
+        loss.backward()
+        optimizer.step()
 
-    print(f"\nPrediction for {PREDICT_AHEAD} days starting from {prediction_start_date.strftime('%Y-%m-%d')}:")
-    print("Actual vs. Predicted Temperature:")
-    for i in range(PREDICT_AHEAD):
-        print(f"Day {i+1} ({prediction_dates[i].strftime('%Y-%m-%d')}): "
-              f"Actual Temp: {actual_output[i, 0]:.2f}°C, "
-              f"Predicted Temp: {predicted_output[i, 0]:.2f}°C")
+        if epoch % 10 == 0:
+            print(f"Epoch {epoch}, Loss: {loss.item():.4f}")
 
-    print("\nActual vs. Predicted Precipitation:")
-    for i in range(PREDICT_AHEAD):
-        print(f"Day {i+1} ({prediction_dates[i].strftime('%Y-%m-%d')}): "
-              f"Actual Precip: {actual_output[i, 1]:.2f}mm, "
-              f"Predicted Precip: {predicted_output[i, 1]:.2f}mm")
+    # Evaluation
+    model.eval()
+    with torch.no_grad():
+        preds = model(X_test_tensor).argmax(dim=1)
+        acc = (preds == y_test_tensor).float().mean()
+        print(f"Test Accuracy: {acc.item():.2%}")
 
-    # Plot actual vs. predicted values for a sample
-    plt.figure(figsize=(14, 6))
-    plt.subplot(1, 2, 1)
-    plt.plot(prediction_dates, actual_output[:, 0], label='Actual Temperature', marker='o')
-    plt.plot(prediction_dates, predicted_output[:, 0], label='Predicted Temperature', linestyle='--', marker='x')
-    plt.title(f'Temperature Prediction for {PREDICT_AHEAD} Days')
-    plt.xlabel('Date')
-    plt.ylabel('Temperature (°C)')
-    plt.xticks(rotation=45)
-    plt.legend()
-    plt.grid(True)
+if __name__ == "__main__":
+    df = generate_synthetic_climate_data()
+    print(df.head())
 
-    plt.subplot(1, 2, 2)
-    plt.plot(prediction_dates, actual_output[:, 1], label='Actual Precipitation', marker='o', color='orange')
-    plt.plot(prediction_dates, predicted_output[:, 1], label='Predicted Precipitation', linestyle='--', marker='x', color='green')
-    plt.title(f'Precipitation Prediction for {PREDICT_AHEAD} Days')
-    plt.xlabel('Date')
-    plt.ylabel('Precipitation (mm)')
-    plt.xticks(rotation=45)
-    plt.legend()
-    plt.grid(True)
-    plt.tight_layout()
-    plt.show()
+    print("\n--- Training Random Forest Model ---")
+    rf_model = train_random_forest(df)
 
-    print("\n--- End of Demonstration ---")
+    print("\n--- Training Neural Network Model ---")
+    train_nn(df)
